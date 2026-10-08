@@ -1,0 +1,136 @@
+# Hamrooz production stack. Always run with the explicit project name, file and release env:
+#   docker compose -p hamrooz -f compose.yml --env-file ../../release.env <command>
+# (deploy.sh does this). Only `web` joins the shared Traefik network; PostgreSQL has no
+# published ports and sits on an internal-only network.
+name: hamrooz
+
+x-app: &app
+  image: hamrooz:${HAMROOZ_RELEASE:?set HAMROOZ_RELEASE}
+  env_file:
+    - '${HAMROOZ_SHARED:-/home/kian/apps/hamrooz/shared}/app.env'
+  environment:
+    APP_RELEASE: ${HAMROOZ_RELEASE}
+  restart: unless-stopped
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  logging:
+    driver: json-file
+    options: { max-size: '10m', max-file: '3' }
+  depends_on:
+    db:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:16-alpine
+    env_file:
+      - '${HAMROOZ_SHARED:-/home/kian/apps/hamrooz/shared}/db.env'
+    restart: unless-stopped
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U hamrooz -d hamrooz']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    shm_size: 128mb
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options: { max-size: '10m', max-file: '3' }
+    deploy:
+      resources:
+        limits: { cpus: '1.0', memory: 512M, pids: 200 }
+
+  web:
+    <<: *app
+    networks: [internal, egress, proxy]
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits: { cpus: '1.0', memory: 768M, pids: 256 }
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: internal_network
+      traefik.http.routers.hamrooz-web.rule: Host(`auto.levian.tech`)
+      traefik.http.routers.hamrooz-web.entrypoints: websecure
+      traefik.http.routers.hamrooz-web.tls: 'true'
+      traefik.http.routers.hamrooz-web.tls.certresolver: letsencrypt
+      traefik.http.routers.hamrooz-web.service: hamrooz-web
+      traefik.http.services.hamrooz-web.loadbalancer.server.port: '3000'
+
+  worker:
+    <<: *app
+    command: ['node', 'dist/worker.mjs']
+    networks: [internal, egress]
+    stop_grace_period: 30s
+    healthcheck:
+      # the worker touches this file every loop (~20s); stale for 2 minutes = unhealthy
+      test: ['CMD', 'node', '-e', "const t=+require('fs').readFileSync('/tmp/hamrooz-worker.alive','utf8');process.exit(Date.now()-t<120000?0:1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    tmpfs: [/tmp]
+    deploy:
+      resources:
+        limits: { cpus: '0.5', memory: 384M, pids: 128 }
+
+  backup:
+    image: postgres:16-alpine
+    env_file:
+      - '${HAMROOZ_SHARED:-/home/kian/apps/hamrooz/shared}/db.env'
+    environment:
+      PGHOST: db
+      PGUSER: hamrooz
+      PGDATABASE: hamrooz
+      BACKUP_RETENTION_DAYS: '14'
+      BACKUP_INTERVAL_SECONDS: '86400'
+    user: '1000:1000'
+    entrypoint: ['/bin/sh', '/scripts/backup-loop.sh']
+    volumes:
+      - '${HAMROOZ_BACKUPS:-/home/kian/apps/hamrooz/backups}:/backups'
+      - ./backup-loop.sh:/scripts/backup-loop.sh:ro
+    networks: [internal]
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options: { max-size: '5m', max-file: '2' }
+    deploy:
+      resources:
+        limits: { cpus: '0.25', memory: 256M, pids: 64 }
+
+  migrate:
+    <<: *app
+    profiles: [tools]
+    restart: 'no'
+    command: ['node_modules/.bin/prisma', 'migrate', 'deploy']
+    networks: [internal]
+
+  cli:
+    <<: *app
+    profiles: [tools]
+    restart: 'no'
+    entrypoint: ['node', 'dist/cli.mjs']
+    networks: [internal]
+
+volumes:
+  pgdata:
+
+networks:
+  internal:
+    internal: true
+  egress: {}
+  proxy:
+    external: true
+    name: internal_network
