@@ -1,0 +1,115 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/vazirmatn';
+
+@custom-variant dark (@media (prefers-color-scheme: dark));
+
+@theme {
+  --font-sans: 'Vazirmatn Variable', system-ui, sans-serif;
+  --color-bg: #f6f5f1;
+  --color-surface: #ffffff;
+  --color-surface-2: #efede7;
+  --color-line: #e2dfd7;
+  --color-ink: #1d2125;
+  --color-muted: #6a6f76;
+  --color-accent: #0f766e;
+  --color-accent-ink: #ffffff;
+  --color-accent-soft: #d9efec;
+  --color-work: #4f46e5;
+  --color-work-soft: #e6e4fb;
+  --color-personal: #b45309;
+  --color-personal-soft: #f8ead7;
+  --color-rest: #0369a1;
+  --color-rest-soft: #dcecf6;
+  --color-fun: #be185d;
+  --color-fun-soft: #f8e1ec;
+  --color-danger: #b91c1c;
+  --color-danger-soft: #fbe3e3;
+  --color-warn: #a16207;
+  --color-warn-soft: #fbf0d0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #121416;
+    --color-surface: #1b1e21;
+    --color-surface-2: #24282c;
+    --color-line: #30353a;
+    --color-ink: #eceef0;
+    --color-muted: #9aa1a8;
+    --color-accent: #2dd4bf;
+    --color-accent-ink: #062b28;
+    --color-accent-soft: #123a36;
+    --color-work: #a5b4fc;
+    --color-work-soft: #262a4d;
+    --color-personal: #fbbf24;
+    --color-personal-soft: #3a2e12;
+    --color-rest: #7dd3fc;
+    --color-rest-soft: #13303f;
+    --color-fun: #f9a8d4;
+    --color-fun-soft: #3d1b2c;
+    --color-danger: #fca5a5;
+    --color-danger-soft: #3d1a1a;
+    --color-warn: #fcd34d;
+    --color-warn-soft: #3a3012;
+  }
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+/* numbers inside RTL text stay readable */
+.ltr {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+@utility card {
+  @apply rounded-2xl border border-line bg-surface;
+}
+@utility btn {
+  @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-medium transition active:scale-[0.98] disabled:opacity-50;
+}
+@utility btn-primary {
+  @apply btn bg-accent text-accent-ink;
+}
+@utility btn-ghost {
+  @apply btn border border-line bg-surface text-ink;
+}
+@utility btn-danger {
+  @apply btn bg-danger-soft text-danger;
+}
+@utility chip {
+  @apply inline-flex min-h-9 items-center gap-1 rounded-full border border-line bg-surface px-3 text-sm;
+}
+@utility chip-on {
+  @apply border-accent bg-accent-soft text-accent;
+}
+@utility field {
+  @apply block w-full rounded-xl border border-line bg-surface px-3 py-2.5 text-base text-ink placeholder:text-muted;
+}
+@utility label {
+  @apply mb-1 block text-sm text-muted;
+}
+@utility section-title {
+  @apply mb-2 text-sm font-semibold text-muted;
+}
