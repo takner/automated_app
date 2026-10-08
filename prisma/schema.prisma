@@ -1,0 +1,426 @@
+// Hamrooz data model.
+// Conventions:
+// - Exact instants are `DateTime` (stored as UTC timestamptz).
+// - Calendar dates without a time are `String` "YYYY-MM-DD" in the user's local calendar
+//   (Gregorian ISO form) plus, where it matters, an explicit `CalendarKind` that says which
+//   calendar the *recurrence* follows. A Jalali birthday is never reduced to a Gregorian rule.
+// - Times of day without a date are `String` "HH:mm" interpreted in `timezone`.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum CalendarKind {
+  jalali
+  gregorian
+}
+
+enum Category {
+  personal
+  work
+}
+
+enum Level {
+  low
+  medium
+  high
+}
+
+enum TaskStatus {
+  todo
+  done
+  cancelled
+}
+
+enum OccurrenceStatus {
+  todo
+  done
+  skipped
+}
+
+enum RecurFreq {
+  daily
+  weekly
+  monthly
+  yearly
+}
+
+// What to do when a monthly/yearly rule hits a day the month does not have
+// (e.g. day 31 in a 30-day month, 30 Esfand in a common year, Feb 29).
+enum MonthEndPolicy {
+  clamp // use the last day of that month; shown to the user as such
+  skip // no occurrence that month/year
+}
+
+enum ReminderAnchor {
+  start // relative to scheduled start (زمان اجرا)
+  due // relative to deadline (موعد)
+}
+
+enum NotificationStatus {
+  pending
+  processing
+  sent
+  failed
+  cancelled
+  skipped
+}
+
+enum PlanStatus {
+  draft
+  accepted
+  discarded
+}
+
+enum ConnectionStatus {
+  active
+  error
+  revoked
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  settings      UserSettings?
+  sessions      Session[]
+  tasks         Task[]
+  occurrences   TaskOccurrence[]
+  birthdays     Birthday[]
+  deadlines     Deadline[]
+  fixedBlocks   FixedBlock[]
+  dayEnergies   DayEnergy[]
+  notifications Notification[]
+  pushSubs      PushSubscription[]
+  calendar      CalendarConnection?
+  calEvents     CalendarEvent[]
+  eventLinks    CalendarEventLink[]
+  plans         DailyPlan[]
+}
+
+model Session {
+  id         String   @id // sha256(token); the raw token only lives in the cookie
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+  lastSeenAt DateTime @default(now())
+  userAgent  String?
+
+  @@index([userId])
+}
+
+model UserSettings {
+  userId                 String  @id
+  user                   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  timezone               String  @default("Asia/Tehran")
+  // Luxon weekday numbers: 1=Mon … 6=Sat, 7=Sun. Default Iranian work week Sat–Wed.
+  workDays               Int[]   @default([6, 7, 1, 2, 3])
+  workStart              String  @default("09:00")
+  workEnd                String  @default("17:00")
+  sleepStart             String  @default("23:30")
+  sleepEnd               String  @default("07:30")
+  minRestMinutes         Int     @default(45)
+  minFunMinutes          Int     @default(60)
+  focusBlockMinutes      Int     @default(90)
+  breakMinutes           Int     @default(15)
+  notificationsEnabled   Boolean @default(true)
+  quietStart             String? @default("23:00")
+  quietEnd               String? @default("07:30")
+  notificationPreview    Boolean @default(true)
+  dateReminderTime       String  @default("09:00")
+  voiceConsentAt         DateTime?
+  updatedAt              DateTime @updatedAt
+}
+
+// Fixed personal blocks (gym, school pickup, family dinner…) the planner must not touch.
+model FixedBlock {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title  String
+  days   Int[] // Luxon weekdays
+  start  String
+  end    String
+  kind   String @default("personal") // personal | rest | fun
+
+  @@index([userId])
+}
+
+model DayEnergy {
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date   String
+  energy Level
+
+  @@id([userId, date])
+}
+
+model Task {
+  id              String         @id @default(cuid())
+  userId          String
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title           String
+  description     String?
+  category        Category       @default(personal)
+  priority        Level          @default(medium)
+  energy          Level?
+  status          TaskStatus     @default(todo)
+  completedAt     DateTime?
+  // Deadline: a local date, optionally with a local time. dueAt is derived (UTC) when both exist
+  // or as end-of-day for date-only deadlines, and is only used for ordering and reminders.
+  dueDate         String?
+  dueTime         String?
+  dueAt           DateTime?
+  // Planned execution time, separate from the deadline.
+  scheduledStart  DateTime?
+  durationMinutes Int?
+  timezone        String         @default("Asia/Tehran")
+  reminderOffsets Int[]          @default([]) // minutes before the anchor
+  reminderAnchor  ReminderAnchor @default(start)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  recurrence  TaskRecurrence?
+  occurrences TaskOccurrence[]
+  eventLinks  CalendarEventLink[]
+
+  @@index([userId, status])
+  @@index([userId, dueDate])
+}
+
+// Recurrence rule. Occurrences are virtual (expanded from the rule) and only get a
+// TaskOccurrence row once something happens to them (done, skipped, edited, moved).
+model TaskRecurrence {
+  taskId         String         @id
+  task           Task           @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  freq           RecurFreq
+  interval       Int            @default(1)
+  weekdays       Int[]          @default([]) // Luxon weekdays, for weekly rules
+  calendar       CalendarKind   @default(jalali)
+  startDate      String // first possible occurrence (local ISO date)
+  untilDate      String?
+  time           String? // local "HH:mm" for each occurrence; null = any time that day
+  monthEndPolicy MonthEndPolicy @default(clamp)
+}
+
+model TaskOccurrence {
+  id               String           @id @default(cuid())
+  taskId           String
+  task             Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId           String
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date             String // the occurrence's original local date (its identity within the series)
+  status           OccurrenceStatus @default(todo)
+  completedAt      DateTime?
+  overrideTitle    String?
+  overrideStart    DateTime?
+  overrideDuration Int?
+  movedToDate      String? // occurrence moved to another day (time unspecified)
+  updatedAt        DateTime         @updatedAt
+
+  @@unique([taskId, date])
+  @@index([userId, date])
+}
+
+model Birthday {
+  id           String       @id @default(cuid())
+  userId       String
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name         String
+  calendar     CalendarKind @default(jalali)
+  month        Int // in `calendar`
+  day          Int // in `calendar`
+  year         Int? // birth year in `calendar`, optional
+  reminderDays Int[]        @default([0, 3])
+  notes        String?
+  // Leap-day birthdays (30 Esfand / Feb 29) in common years.
+  leapPolicy   MonthEndPolicy @default(clamp)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([userId])
+}
+
+model Deadline {
+  id           String            @id @default(cuid())
+  userId       String
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title        String
+  kind         String            @default("other") // insurance | other
+  dueDate      String
+  notes        String?
+  reminderDays Int[]             @default([30, 7, 1])
+  archived     Boolean           @default(false)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  renewals     DeadlineRenewal[]
+
+  @@index([userId, dueDate])
+}
+
+model DeadlineRenewal {
+  id              String   @id @default(cuid())
+  deadlineId      String
+  deadline        Deadline @relation(fields: [deadlineId], references: [id], onDelete: Cascade)
+  previousDueDate String
+  newDueDate      String
+  note            String?
+  renewedAt       DateTime @default(now())
+
+  @@index([deadlineId])
+}
+
+// Durable notification queue (PostgreSQL-backed). One row per logical reminder.
+// dedupeKey identifies "the same reminder" so re-planning never creates a second copy and
+// an already-sent reminder is never re-sent.
+model Notification {
+  id            String             @id @default(cuid())
+  userId        String
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceType    String // task | occurrence | birthday | deadline | test
+  sourceId      String?
+  dedupeKey     String             @unique
+  fireAt        DateTime
+  status        NotificationStatus @default(pending)
+  attempts      Int                @default(0)
+  nextAttemptAt DateTime
+  lockedAt      DateTime?
+  lastError     String?
+  title         String
+  body          String
+  url           String             @default("/")
+  acceptedCount Int? // push services that accepted the message (≠ seen on device)
+  sentAt        DateTime?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@index([userId, sourceType, sourceId])
+}
+
+model PushSubscription {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint      String    @unique
+  p256dh        String
+  auth          String
+  userAgent     String?
+  createdAt     DateTime  @default(now())
+  lastSuccessAt DateTime?
+  failureCount  Int       @default(0)
+
+  @@index([userId])
+}
+
+model CalendarConnection {
+  id              String           @id @default(cuid())
+  userId          String           @unique
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  googleEmail     String?
+  accessTokenEnc  String
+  refreshTokenEnc String?
+  tokenExpiresAt  DateTime
+  scope           String
+  appCalendarId   String?
+  status          ConnectionStatus @default(active)
+  lastSyncAt      DateTime?
+  lastSyncError   String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  sources         CalendarSource[]
+}
+
+model CalendarSource {
+  id               String             @id @default(cuid())
+  connectionId     String
+  connection       CalendarConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  googleCalendarId String
+  summary          String
+  color            String?
+  primary          Boolean            @default(false)
+  selected         Boolean            @default(false)
+  isAppCalendar    Boolean            @default(false)
+  events           CalendarEvent[]
+
+  @@unique([connectionId, googleCalendarId])
+}
+
+// Read-only cache of external events in the sync window.
+model CalendarEvent {
+  id             String         @id @default(cuid())
+  userId         String
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceId       String
+  source         CalendarSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  googleEventId  String
+  summary        String
+  allDay         Boolean        @default(false)
+  start          DateTime? // timed events (UTC)
+  end            DateTime?
+  startDate      String? // all-day events: local dates, end exclusive (Google semantics)
+  endDate        String?
+  transparent    Boolean        @default(false) // "free" events do not block time
+  fromApp        Boolean        @default(false)
+  updatedAt      DateTime       @updatedAt
+
+  @@unique([sourceId, googleEventId])
+  @@index([userId, start])
+}
+
+// Mapping task (or one occurrence) → the event this app created for it.
+model CalendarEventLink {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  taskId           String
+  task             Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  occurrenceDate   String   @default("") // "" for one-off tasks
+  googleCalendarId String
+  googleEventId    String
+  lastPushedAt     DateTime @default(now())
+
+  @@unique([taskId, occurrenceDate])
+}
+
+model DailyPlan {
+  id          String     @id @default(cuid())
+  userId      String
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date        String
+  status      PlanStatus @default(draft)
+  blocks      Json
+  unscheduled Json
+  summary     Json
+  createdAt   DateTime   @default(now())
+  acceptedAt  DateTime?
+
+  @@index([userId, date])
+}
+
+model WorkerHeartbeat {
+  name     String   @id
+  beatAt   DateTime
+  info     Json?
+}
+
+// OAuth `state` values (CSRF protection for Google flows), single-use and short-lived.
+model OAuthState {
+  id           String   @id // sha256(state)
+  purpose      String // login | calendar
+  userId       String?
+  codeVerifier String
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+}
