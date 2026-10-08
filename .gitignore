@@ -1,0 +1,23 @@
+node_modules/
+.next/
+dist/
+out/
+coverage/
+playwright-report/
+test-results/
+src/generated/
+*.tsbuildinfo
+next-env.d.ts
+
+# secrets and data
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+backups/
+*.dump
+*.sql.gz
+/private/
+/tmp/
+.claude/
