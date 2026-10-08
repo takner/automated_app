@@ -1,10 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 /** Registers the service worker and offers a reload when a new release is waiting. */
 export function SwRegister() {
   const [waiting, setWaiting] = useState<ServiceWorker | null>(null);
+  // only reload after the user asked for the update (first install also fires controllerchange)
+  const updateRequested = useRef(false);
 
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
@@ -27,7 +29,7 @@ export function SwRegister() {
       .catch(() => {});
     let reloading = false;
     const onChange = () => {
-      if (reloading) return;
+      if (reloading || !updateRequested.current) return;
       reloading = true;
       window.location.reload();
     };
@@ -44,7 +46,10 @@ export function SwRegister() {
   return (
     <div role="status" className="fixed inset-x-3 top-3 z-50 mx-auto flex max-w-md items-center justify-between gap-3 rounded-2xl bg-ink px-4 py-3 text-sm text-bg shadow-lg">
       <span>نسخهٔ جدید هم‌روز آماده است.</span>
-      <button className="rounded-lg bg-accent px-3 py-1.5 font-medium text-accent-ink" onClick={() => waiting.postMessage('SKIP_WAITING')}>
+      <button className="rounded-lg bg-accent px-3 py-1.5 font-medium text-accent-ink" onClick={() => {
+          updateRequested.current = true;
+          waiting.postMessage('SKIP_WAITING');
+        }}>
         به‌روزرسانی
       </button>
     </div>
